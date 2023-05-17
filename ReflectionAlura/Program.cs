@@ -1,163 +1,221 @@
-﻿using System;
+﻿using Microsoft.Data.Sqlite;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace ReflectionAlura;
-
-internal class Program
+var orm = new Orm<Pessoa>("Data Source=hello.db");
+var x = orm.Insert(new Pessoa
 {
-    static void Main(string[] args)
-    {
-        Console.WriteLine("Controle de versões de dados \r\n");
+    Id = 1,
+    Nome = "Thamirys",
+    DataDeNascimento = DateTime.Now,
+    Ativo = true
+});
 
-        var pessoa = new Pessoa()
-        {
-            Id = 1,
-            Nome = "Thamirys",
-            Sobrenome = "Gameiro",
-            DataNascimento = DateTime.Now,
-            Salario = 1000,
-            Endereco = new Endereco { Id = 1, Logradouro = "Rua 1" }
-        };
+orm.Insert(new Pessoa
+{
+    Id = 2,
+    Nome = "Diego",
+    DataDeNascimento = DateTime.Now,
+    Ativo = true
+});
 
-        VersionadorDeObjetos.Versionar(pessoa);
-
-        pessoa.Sobrenome = "Cavalcante";
-
-        VersionadorDeObjetos.Versionar(pessoa);
-
-        pessoa.Endereco.Logradouro = "Rua 2";
-
-        VersionadorDeObjetos.Versionar(pessoa);
+orm.Insert(new Pessoa
+{
+    Id = 3,
+    Nome = "Diana",
+    DataDeNascimento = DateTime.Now,
+    Ativo = true
+});
 
 
-
-        var tipo = Type.GetType("ReflectionAlura.Pessoa");
-        var novaPessoa = Activator.CreateInstance(tipo) as Pessoa;
-
-
-
-        novaPessoa.Id = 1;
-        novaPessoa.Nome = "Diego";
-        novaPessoa.Sobrenome = "Cavalcante";
-        novaPessoa.DataNascimento = DateTime.Now;
-        novaPessoa.Salario = 100000;
-        novaPessoa.Endereco = new Endereco { Id = 1, Logradouro = "Rua 3" };
-
-        VersionadorDeObjetos.Versionar(novaPessoa);
-
-
-        var versoes = VersionadorDeObjetos.ObterVersoesPorNomeTipoObjeto(typeof(Pessoa).Name);
-
-
-
-
-        foreach (var item in versoes)
-        {
-            Console.WriteLine($"Versão: {item.DataHora:O}");
-
-            foreach (var p in item.Propriedades)
-            {
-                Console.WriteLine($"    {p.Key} = {p.Value}");
-            }
-
-            Console.WriteLine("\r\n#################################\r\n");
-        }
-
-
-        
-
-    }   
+var pessoa = orm.SelectById(1);
+if (pessoa is not null)
+{
+    Console.WriteLine($"{pessoa.Id} - {pessoa.Nome} - {pessoa.DataDeNascimento} - {pessoa.Ativo}");
+    pessoa.Nome += " EDITADO";
+    orm.Update(pessoa);
 }
+
+
+orm.DeleteById(2);
+
+
+var all = orm.SelectAll();
+foreach (var p in all)
+{
+    Console.WriteLine($"{p.Id} - {p.Nome} - {p.DataDeNascimento} - {p.Ativo}");
+}
+
+
+public class Orm<T> where T : class, new()
+{
+    private readonly string _connectionString;
+
+
+    public Orm(string connectionString)
+    {
+        _connectionString = connectionString;
+    }
+
+    public T Insert(T entity)
+    {
+        var propertiesValues = PropertiesManager.GetPropertiesValues(entity);
+
+
+        var tableName = typeof(T).Name;
+        var columns = string.Empty;
+        var parameters = string.Empty;
+
+
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        var command = connection.CreateCommand();
+        for (var i = 0; i < propertiesValues.Count; i++)
+        {
+            var propertyValue = propertiesValues[i];
+            command.Parameters.AddWithValue($"${propertyValue.Name}", propertyValue.Value);
+            columns += propertyValue.Name;
+            parameters += $"${propertyValue.Name}";
+            if (i < 0 || i >= propertiesValues.Count - 1) continue;
+            columns += ",";
+            parameters += ",";
+        }
+        command.CommandText = $"INSERT INTO {tableName} ({columns}) VALUES ({parameters})";
+        var x = command.ExecuteNonQuery();
+        Console.WriteLine(command.CommandText);
+        return entity;
+    }
+
+    public T Update(T entity)
+    {
+        var propertiesValues = PropertiesManager.GetPropertiesValues(entity);
+
+
+        var tableName = typeof(T).Name;
+        var columnsValues = string.Empty;
+        object? id = null;
+
+
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        var command = connection.CreateCommand();
+        for (var i = 0; i < propertiesValues.Count; i++)
+        {
+            var propertyValue = propertiesValues[i];
+            if (propertyValue.IsId)
+                id = propertyValue.Value;
+
+            command.Parameters.AddWithValue($"${propertyValue.Name}", propertyValue.Value);
+            columnsValues += $"{propertyValue.Name} = ${propertyValue.Name}";
+            if (i < 0 || i >= propertiesValues.Count - 1) continue;
+            columnsValues += ",";
+        }
+        command.CommandText = $"UPDATE {tableName} SET {columnsValues} WHERE ID = {id}";
+        var x = command.ExecuteNonQuery();
+        Console.WriteLine(command.CommandText);
+        return entity;
+    }
+
+
+    public IReadOnlyList<T> SelectAll()
+    {
+        var tableName = typeof(T).Name;
+        var sql = $"SELECT * FROM {tableName}";
+        var all = Select(sql);
+        return all;
+    }
+
+    public T? SelectById(int id)
+    {
+        var tableName = typeof(T).Name;
+        var sql = $"SELECT * FROM {tableName} WHERE Id = {id}";
+        var all = Select(sql);
+        return all.FirstOrDefault();
+    }
+
+    public void DeleteById(int id)
+    {
+        var properties = PropertiesManager.GetProperties<T>();
+
+        var tableName = typeof(T).Name;
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        var command = connection.CreateCommand();
+        command.CommandText = $"DELETE FROM {tableName} WHERE Id = {id}";
+        _ = command.ExecuteNonQuery();
+    }
+
+    private IReadOnlyList<T> Select(string sql)
+    {
+        var properties = PropertiesManager.GetProperties<T>();
+
+        var tableName = typeof(T).Name;
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        var command = connection.CreateCommand();
+        command.CommandText = sql;
+
+        using var reader = command.ExecuteReader();
+        return CreateEntities(reader);
+    }
+
+    private IReadOnlyList<T> CreateEntities(SqliteDataReader reader)
+    {
+        var entities = new List<T>();
+        var properties = PropertiesManager.GetProperties<T>();
+        while (reader.Read())
+        {
+            var entity = new T();
+            foreach (var property in properties)
+            {
+                var value = Convert.ChangeType(reader[property.Name], property.Type);
+                var type = typeof(T);
+                var propertyInfo = type.GetProperty(property.Name);
+                propertyInfo!.SetValue(entity, value);
+            }
+            entities.Add(entity);
+        }
+        return entities;
+    }
+}
+
+
+public static class PropertiesManager
+{
+    private static readonly Dictionary<Type, IReadOnlyList<Property>> _cache = new();
+    public static IReadOnlyList<Property> GetPropertiesValues<T>(T instance)
+    {
+        var values = new List<Property>();
+        foreach (var property in instance!.GetType().GetProperties())
+        {
+            var value = property!.GetValue(instance, null);
+            values.Add(new Property(property.Name, property.PropertyType, property.Name == "Id", value));
+        }
+        return values;
+    }
+
+    public static IReadOnlyList<Property> GetProperties<T>()
+    {
+        var type = typeof(T);
+        if (_cache.TryGetValue(type, out var properties)) return properties;
+
+        properties = typeof(T).GetProperties()
+            .Select(x => new Property(x.Name, x.PropertyType, x.Name == "Id"))
+            .ToList();
+        _cache.Add(type, properties);
+        return properties;
+    }
+}
+
+
+public record Property(string Name, Type Type, bool IsId, object? Value = null);
 
 
 public class Pessoa
 {
     public int Id { get; set; }
-    public string Nome { get; set; }
-    public string Sobrenome { get; set; }
-    public Endereco Endereco { get; set; }
-    public DateTime DataNascimento { get; set; }
-    public decimal Salario { get; set; }
-
-}
-
-public class Endereco
-{
-    public int Id { get; set; }
-    public string Logradouro { get; set; }
-}
-
-static class VersionadorDeObjetos
-{
-    private static List<VersaoDoObjeto> bancoDeDados = new List<VersaoDoObjeto>();
-
-    public static void Versionar(object instancia)
-    {
-        var nomeTipoObjeto = instancia.GetType().Name;
-        var propriedades = ObterPropriedades(instancia);
-        var ultimaVersao = bancoDeDados.LastOrDefault(x => x.NomeTipoObjeto == nomeTipoObjeto);
-
-        var versao = new VersaoDoObjeto()
-        {
-            NomeTipoObjeto = nomeTipoObjeto,
-            Propriedades = propriedades
-        };
-
-        bancoDeDados.Add(versao);
-
-    }
-
-    public static List<VersaoDoObjeto> ObterVersoesPorNomeTipoObjeto(string nomeTipoObjeto)
-    {
-        return bancoDeDados.Where(x => x.NomeTipoObjeto == nomeTipoObjeto).ToList();
-    }
-
-    private static Dictionary<string, object> ObterPropriedades(object instancia)
-    {
-        var tipo = instancia.GetType();
-        var propriedades = tipo.GetProperties();
-
-        var dicionario = new Dictionary<string, object>();
-
-        foreach (var p in propriedades)
-        {
-            var valor = p.GetValue(instancia);
-
-            if (TipoPrimitivo(p.PropertyType))
-            {
-                dicionario.Add($"{tipo.Name}.{p.Name}", valor);
-            }
-            else
-            {
-                var recursao = ObterPropriedades(valor);
-                foreach (var item in recursao)
-                {
-                    dicionario.Add(item.Key, item.Value);
-                }
-            }
-
-        }
-
-        return dicionario;
-    }
-
-    private static bool TipoPrimitivo(Type type)
-    {
-        return (type == typeof(bool) || type == typeof(byte) || type == typeof(sbyte)
-            || type == typeof(char) || type == typeof(decimal) || type == typeof(double)
-            || type == typeof(float) || type == typeof(int) || type == typeof(uint)
-            || type == typeof(long) || type == typeof(ulong) || type == typeof(short)
-            || type == typeof(ushort) || type == typeof(string) || type == typeof(DateTime));
-    }
-
-}
-
-class VersaoDoObjeto
-{
-    public DateTime DataHora { get; set; } = DateTime.Now;
-    public string NomeTipoObjeto { get; set; }
-    public Dictionary<string, object> Propriedades { get; set; }
-
-
+    public string Nome { get; set; } = string.Empty;
+    public DateTime DataDeNascimento { get; set; }
+    public bool Ativo { get; set; }
 }
